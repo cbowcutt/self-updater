@@ -20,13 +20,10 @@ var ErrBadSignature = errors.New("signing: signature verification failed")
 
 // ParsePrivateKey decodes a base64 32-byte Ed25519 seed into a full private key.
 func ParsePrivateKey(b64 string) (ed25519.PrivateKey, error) {
+
 	seed, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
-	if err != nil {
-		return nil, fmt.Errorf("decode signing key: %w", err)
-	}
-	if len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("signing key must be a %d-byte seed, got %d bytes",
-			ed25519.SeedSize, len(seed))
+	if err != nil || len(seed) != ed25519.SeedSize { // 32
+		return nil, errors.New("RELEASE_SIGNING_KEY must be a base64-encoded 32-byte Ed25519 seed")
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
 }
