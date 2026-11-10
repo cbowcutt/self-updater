@@ -18,21 +18,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"time"
+
+	"github.com/cbowcutt/self-updater/internal/manifest/models"
 )
 
-// Artifact describes one downloadable binary.
-type Artifact struct {
-	URL    string `json:"url"`
-	SHA256 string `json:"sha256"` // lowercase hex
-}
+// Manifest is the signed release manifest model used by clients and publishers.
+type Manifest = models.Manifest
 
-// Manifest describes the latest release. Artifacts is keyed by
-// "<GOOS>-<GOARCH>", e.g. "linux-amd64" or "windows-amd64".
-type Manifest struct {
-	Version     string              `json:"version"` // semver, no leading "v"
-	PublishedAt time.Time           `json:"published_at"`
-	Artifacts   map[string]Artifact `json:"artifacts"`
-}
+// Artifact describes one downloadable release binary.
+type Artifact = models.Artifact
 
 var (
 	semverRe = regexp.MustCompile(
@@ -43,8 +37,8 @@ var (
 	artifactRe = regexp.MustCompile(`^app-([a-z0-9]+)-([a-z0-9]+)(\.exe)?$`)
 )
 
-// Build hashes every release binary in dir and returns the manifest for them.
-// baseURL is the directory URL the files will be served from.
+// Build hashes every release binary in dir and returns a manifest describing them.
+// baseURL is the base URL the published files will be served from.
 func Build(dir, version, baseURL string, now time.Time) (*Manifest, error) {
 	if !semverRe.MatchString(version) {
 		return nil, fmt.Errorf("invalid version %q: want semver without a leading 'v'", version)
@@ -89,16 +83,6 @@ func Build(dir, version, baseURL string, now time.Time) (*Manifest, error) {
 		return nil, fmt.Errorf("no app-<os>-<arch> binaries found in %s", dir)
 	}
 	return m, nil
-}
-
-// Marshal returns the canonical bytes that get signed and published.
-// encoding/json sorts map keys, so output is deterministic.
-func (m *Manifest) Marshal() ([]byte, error) {
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(b, '\n'), nil
 }
 
 // Parse decodes and validates manifest bytes. Call Verify on the same bytes
