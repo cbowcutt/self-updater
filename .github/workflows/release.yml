@@ -1,0 +1,130 @@
+# .github/workflows/release.yml
+#
+# Triggered by pushing a tag like v1.4.2. Builds one binary per platform,
+# generates + signs manifest.json, and publishes everything as release assets.
+#
+# Required repo secret:
+#   RELEASE_SIGNING_KEY  base64-encoded Ed25519 private key (never committed)
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Least privilege by default; the publish job elevates for itself only.
+permissions:
+  contents: read
+
+# Never run two releases for the same tag at once.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, ext: "" }
+          - { goos: linux,   goarch: arm64, ext: "" }
+          - { goos: darwin,  goarch: amd64, ext: "" }
+          - { goos: darwin,  goarch: arm64, ext: "" }
+          - { goos: windows, goarch: amd64, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/app-${GOOS}-${GOARCH}${{ matrix.ext }}" \
+            ./cmd/app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload assets
+    # Optional: put RELEASE_SIGNING_KEY in an environment with required
+    # reviewers so a human approves every signing operation.
+    # environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate and sign manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # cmd/release hashes every file in -dir, writes manifest.json and
+          # manifest.json.sig to -out. The key is read from the environment
+          # so it never touches disk or appears in the process list.
+          go run ./cmd/release \
+            -dir dist \
+            -version "${VERSION}" \
+            -base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
+            -out dist
+
+      - name: Verify signature before publishing
+        run: |
+          # Round-trip check using the PUBLIC key committed in the repo, so a
+          # wrong secret fails here and not on every client in the field.
+          go run ./cmd/release verify \
+            -manifest dist/manifest.json \
+            -sig dist/manifest.json.sig \
+            -pubkey keys/public.key
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Create as a draft, upload everything, then publish. The client
+          # polls /releases/latest/download/manifest.json, so "latest" must
+          # never point at a release that is missing its manifest or binaries.
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          gh release edit "${GITHUB_REF_NAME}" --draft=false
