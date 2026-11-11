@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,8 +14,7 @@ import (
 	"github.com/cbowcutt/self-updater/internal/manifest/models"
 )
 
-const latestReleaseAPIURL = "https://api.github.com/repos/cbowcutt/self-updater/releases?per_page=100&page=1"
-const latestManifestURL = "https://github.com/cbowcutt/self-updater/releases/download/v1.10.0/manifest.json"
+const latestManifestURL = "https://github.com/cbowcutt/self-updater/releases/latest/download/manifest.json"
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -80,31 +78,13 @@ func TestGetBinary(t *testing.T) {
 
 func TestGetManifest(t *testing.T) {
 	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() == latestReleaseAPIURL {
-			if req.Header.Get("Accept") != "application/vnd.github+json" || req.Header.Get("Cache-Control") != "no-cache" {
-				t.Fatalf("unexpected release API headers: %v", req.Header)
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body: io.NopCloser(strings.NewReader(`[
-					{"tag_name":"v1.2.3","assets":[{"name":"manifest.json","browser_download_url":"https://example.com/v1.2.3/manifest.json"}]},
-					{"tag_name":"release-notes","assets":[]},
-					{"tag_name":"v99.0.0","draft":true,"assets":[]},
-					{"tag_name":"v1.10.0","assets":[{"name":"manifest.json","browser_download_url":"` + latestManifestURL + `"}]}
-				]`)),
-			}, nil
-		}
 		if req.URL.String() != latestManifestURL {
 			t.Fatalf("unexpected URL: %s", req.URL.String())
-		}
-		if req.Header.Get("Cache-Control") != "no-cache" {
-			t.Fatalf("manifest request missing no-cache header: %v", req.Header)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"version":"1.10.0","artifacts":{"linux-amd64":{"url":"https://example.com/bin","sha256":"abc"}}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"version":"1.2.3","artifacts":{"linux-amd64":{"url":"https://example.com/bin","sha256":"abc"}}}`)),
 		}, nil
 	})}}
 
@@ -112,7 +92,7 @@ func TestGetManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetManifest returned error: %v", err)
 	}
-	if manifest.Version != "1.10.0" || manifest.Artifacts["linux-amd64"].URL != "https://example.com/bin" {
+	if manifest.Version != "1.2.3" || manifest.Artifacts["linux-amd64"].URL != "https://example.com/bin" {
 		t.Fatalf("unexpected manifest: %+v", manifest)
 	}
 }
@@ -126,56 +106,13 @@ func TestGetManifestRejectsBadStatus(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader("boom")),
 		}, nil
 	})}}
-	if _, err := provider.GetManifest(); err == nil || !strings.Contains(err.Error(), "unexpected status") {
+	if _, err := provider.GetManifest(); err == nil || !strings.Contains(err.Error(), "unexpected status code") {
 		t.Fatalf("expected status error, got %v", err)
 	}
 }
 
-func TestGetManifestSelectsHighestSemverAcrossPages(t *testing.T) {
-	const manifestURL = "https://github.com/cbowcutt/self-updater/releases/download/v1.0.0/manifest.json"
-	var firstPage strings.Builder
-	firstPage.WriteByte('[')
-	for i := 1; i <= 100; i++ {
-		if i > 1 {
-			firstPage.WriteByte(',')
-		}
-		fmt.Fprintf(&firstPage, `{"tag_name":"v0.0.%d","assets":[]}`, i)
-	}
-	firstPage.WriteByte(']')
-
-	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.Query().Get("page") {
-		case "1":
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(firstPage.String()))}, nil
-		case "2":
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[{"tag_name":"v1.0.0","assets":[{"name":"manifest.json","browser_download_url":"` + manifestURL + `"}]}]`))}, nil
-		default:
-			if req.URL.String() == manifestURL {
-				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"version":"1.0.0","artifacts":{"linux-amd64":{"url":"https://example.com/bin","sha256":"abc"}}}`))}, nil
-			}
-			t.Fatalf("unexpected request: %s", req.URL)
-			return nil, nil
-		}
-	})}}
-
-	manifest, err := provider.GetManifest()
-	if err != nil {
-		t.Fatalf("GetManifest returned error: %v", err)
-	}
-	if manifest.Version != "1.0.0" {
-		t.Fatalf("selected manifest version = %q, want 1.0.0", manifest.Version)
-	}
-}
-
-func TestGetManifestRejectsBadManifestJSON(t *testing.T) {
-	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() == latestReleaseAPIURL {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`[{"tag_name":"v1.2.3","assets":[{"name":"manifest.json","browser_download_url":"` + latestManifestURL + `"}]}]`)),
-			}, nil
-		}
+func TestGetManifestRejectsBadJSON(t *testing.T) {
+	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -184,18 +121,6 @@ func TestGetManifestRejectsBadManifestJSON(t *testing.T) {
 	})}}
 	if _, err := provider.GetManifest(); err == nil || !strings.Contains(err.Error(), "failed to decode manifest") {
 		t.Fatalf("expected decode error, got %v", err)
-	}
-}
-
-func TestGetManifestRejectsVersionMismatch(t *testing.T) {
-	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() == latestReleaseAPIURL {
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[{"tag_name":"v1.2.3","assets":[{"name":"manifest.json","browser_download_url":"` + latestManifestURL + `"}]}]`))}, nil
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"version":"1.2.2","artifacts":{"linux-amd64":{"url":"https://example.com/bin","sha256":"abc"}}}`))}, nil
-	})}}
-	if _, err := provider.GetManifest(); err == nil || !strings.Contains(err.Error(), "does not match latest release tag") {
-		t.Fatalf("expected release version mismatch error, got %v", err)
 	}
 }
 
@@ -244,13 +169,9 @@ func TestCheckAndDownloadLatestVersion(t *testing.T) {
 	defer server.Close()
 
 	platform := runtime.GOOS + "-" + runtime.GOARCH
-	const releaseManifestURL = "https://github.com/cbowcutt/self-updater/releases/download/v2.0.0/manifest.json"
 	manifestData := `{"version":"2.0.0","artifacts":{"` + platform + `":{"url":"` + server.URL + `","sha256":"` + checksum([]byte(body)) + `"}}}`
 	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() == latestReleaseAPIURL {
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[{"tag_name":"v2.0.0","assets":[{"name":"manifest.json","browser_download_url":"` + releaseManifestURL + `"}]}]`))}, nil
-		}
-		if req.URL.String() == releaseManifestURL {
+		if req.URL.String() == latestManifestURL {
 			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(manifestData))}, nil
 		}
 		return server.Client().Transport.RoundTrip(req)
