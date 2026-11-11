@@ -33,7 +33,13 @@ func (g *GithubBinaryProvider) GetManifest() (*models.Manifest, error) {
 	const manifestURL = "https://github.com/cbowcutt/self-updater/releases/latest/download/manifest.json"
 	slog.Info("fetching latest release manifest")
 	requestStarted := time.Now()
-	resp, err := g.client.Get(manifestURL)
+	request, err := http.NewRequest(http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create manifest request: %w", err)
+	}
+	request.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := g.client.Do(request)
 	if err != nil {
 		slog.Error("manifest request failed", "duration", time.Since(requestStarted), "error", err)
 		return nil, err
