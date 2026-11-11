@@ -33,8 +33,18 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  windows-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
   build:
-    needs: test
+    needs: [test, windows-test]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true

@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package main
 
@@ -24,4 +24,8 @@ func restart(executable string) error {
 		slog.Warn("failed to release restarted process handle", "error", err)
 	}
 	return nil
+}
+
+func runUpdateHelper([]string) bool {
+	return false
 }

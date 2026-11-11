@@ -7,6 +7,7 @@ A Go self-updating application that checks GitHub's latest-release manifest, dow
 1. The release client downloads `manifest.json` from GitHub's `/releases/latest/download/` URL and compares its version with the running version.
 2. If the manifest is newer, it downloads the artifact for the current OS and architecture and verifies the binary's SHA-256 checksum against the manifest.
 3. It stages the update beside the running executable and replaces it. On Linux, the process is replaced in-place so terminal signals continue to reach the running application.
+    On Windows, it starts a helper copy of the app, exits the running process, and lets the helper replace and relaunch the executable. The install directory must be writable by the current user; per-user install locations are recommended.
 
 The manifest is generated and signed by the release workflow. Before parsing a manifest or using its artifact URLs and checksums, the client verifies its detached Ed25519 signature against the trusted public key embedded from [keys/public.key](keys/public.key). Artifact checksums are then checked after download. Updating the trusted signing key requires building and distributing an updater containing the new public key.
 

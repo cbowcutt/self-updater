@@ -18,6 +18,9 @@ var version = "dev" // overridden at build time; "dev" means a local build
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	if runUpdateHelper(os.Args[1:]) {
+		return
+	}
 	slog.Info("self-updater starting", "version", version, "platform", runtime.GOOS+"-"+runtime.GOARCH)
 	executablePath, err := os.Executable()
 	if err != nil {

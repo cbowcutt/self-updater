@@ -54,7 +54,12 @@ func Update(binaryBytes *[]byte) error {
 		return fmt.Errorf("failed to create temporary update file: %w", err)
 	}
 	tempPath := tempFile.Name()
-	defer os.Remove(tempPath)
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
 	defer tempFile.Close()
 
 	if _, err := tempFile.Write(*binaryBytes); err != nil {
@@ -72,6 +77,15 @@ func Update(binaryBytes *[]byte) error {
 	if err := tempFile.Close(); err != nil {
 		slog.Error("failed to close temporary update file", "path", tempPath, "error", err)
 		return fmt.Errorf("failed to close temporary update file: %w", err)
+	}
+	if runtime.GOOS == "windows" {
+		if err := launchWindowsUpdateHelper(cmdPath, tempPath, os.Args[1:]); err != nil {
+			slog.Error("failed to start Windows update helper", "error", err)
+			return fmt.Errorf("failed to start Windows update helper: %w", err)
+		}
+		removeTemp = false
+		slog.Info("Windows update staged; helper will replace executable after shutdown", "path", cmdPath, "staged_path", tempPath)
+		return nil
 	}
 	if err := os.Rename(tempPath, cmdPath); err != nil {
 		slog.Error("failed to atomically replace executable", "path", cmdPath, "error", err)

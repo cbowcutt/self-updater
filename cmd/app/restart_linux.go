@@ -12,3 +12,7 @@ import (
 func restart(executable string) error {
 	return syscall.Exec(executable, os.Args, os.Environ())
 }
+
+func runUpdateHelper([]string) bool {
+	return false
+}
