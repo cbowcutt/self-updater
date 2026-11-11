@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -40,6 +41,7 @@ var (
 // Build hashes every release binary in dir and returns a manifest describing them.
 // baseURL is the base URL the published files will be served from.
 func Build(dir, version, baseURL string, now time.Time) (*Manifest, error) {
+	slog.Info("building release manifest", "directory", dir, "version", version)
 	if !semverRe.MatchString(version) {
 		return nil, fmt.Errorf("invalid version %q: want semver without a leading 'v'", version)
 	}
@@ -64,6 +66,7 @@ func Build(dir, version, baseURL string, now time.Time) (*Manifest, error) {
 			continue
 		}
 		platform := match[1] + "-" + match[2]
+		slog.Debug("processing release artifact", "file", e.Name(), "platform", platform)
 		if _, dup := m.Artifacts[platform]; dup {
 			return nil, fmt.Errorf("multiple binaries for platform %s", platform)
 		}
@@ -77,17 +80,20 @@ func Build(dir, version, baseURL string, now time.Time) (*Manifest, error) {
 			return nil, fmt.Errorf("build url for %s: %w", e.Name(), err)
 		}
 		m.Artifacts[platform] = Artifact{URL: u, SHA256: sum}
+		slog.Info("release artifact added", "platform", platform, "file", e.Name(), "sha256", sum)
 	}
 
 	if len(m.Artifacts) == 0 {
 		return nil, fmt.Errorf("no app-<os>-<arch> binaries found in %s", dir)
 	}
+	slog.Info("release manifest build complete", "version", m.Version, "artifacts", len(m.Artifacts))
 	return m, nil
 }
 
 // Parse decodes and validates manifest bytes. Call Verify on the same bytes
 // first; Parse does not authenticate anything.
 func Parse(data []byte) (*Manifest, error) {
+	slog.Debug("parsing release manifest", "bytes", len(data))
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
@@ -98,6 +104,7 @@ func Parse(data []byte) (*Manifest, error) {
 	if len(m.Artifacts) == 0 {
 		return nil, errors.New("manifest has no artifacts")
 	}
+	slog.Debug("release manifest parsed", "version", m.Version, "artifacts", len(m.Artifacts))
 	return &m, nil
 }
 

@@ -176,9 +176,12 @@ func TestCheckAndDownloadLatestVersion(t *testing.T) {
 		}
 		return server.Client().Transport.RoundTrip(req)
 	})}}
-	binary, err := provider.CheckAndDownloadLatestVersion("1.0.0")
+	shouldUpdate, binary, err := provider.CheckAndDownloadLatestVersion("1.0.0")
 	if err != nil {
 		t.Fatalf("CheckAndDownloadLatestVersion returned error: %v", err)
+	}
+	if !shouldUpdate {
+		t.Fatal("shouldUpdate = false, want true")
 	}
 	if binary == nil || string(*binary) != body {
 		t.Fatalf("binary = %v, want %q", binary, body)
@@ -190,7 +193,7 @@ func TestCheckAndDownloadLatestVersionReturnsManifestError(t *testing.T) {
 	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, wantErr
 	})}}
-	if _, err := provider.CheckAndDownloadLatestVersion("1.0.0"); !errors.Is(err, wantErr) {
+	if _, _, err := provider.CheckAndDownloadLatestVersion("1.0.0"); !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want %v", err, wantErr)
 	}
 }

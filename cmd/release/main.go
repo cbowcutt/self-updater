@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -34,7 +35,7 @@ func main() {
 		err = runSign(os.Args[1:])
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "release:", err)
+		slog.Error("release command failed", "error", err)
 		os.Exit(1)
 	}
 }
@@ -51,26 +52,31 @@ func runSign(args []string) error {
 	if *version == "" || *baseURL == "" {
 		return fmt.Errorf("-version and -base-url are required")
 	}
+	slog.Info("starting release signing", "version", *version, "binary_directory", *dir, "output_directory", *out)
 
 	priv, err := signing.ParsePrivateKey(os.Getenv(keyEnv))
 	if err != nil {
 		return fmt.Errorf("%s: %w", keyEnv, err)
 	}
+	slog.Debug("release signing key parsed")
 
 	m, err := manifest.Build(*dir, *version, *baseURL, time.Now())
 	if err != nil {
 		return err
 	}
+	slog.Info("release manifest built", "version", m.Version, "artifacts", len(m.Artifacts))
 	data, err := m.Marshal()
 	if err != nil {
 		return err
 	}
 	sig := signing.Sign(priv, data)
+	slog.Debug("release manifest signed", "manifest_bytes", len(data))
 
 	// Self-check with the derived public key before writing anything out.
 	if err := signing.Verify(priv.Public().(ed25519.PublicKey), data, sig); err != nil {
 		return fmt.Errorf("self-verification failed: %w", err)
 	}
+	slog.Info("release signature self-verification passed")
 
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return err
@@ -82,7 +88,7 @@ func runSign(args []string) error {
 		return err
 	}
 
-	fmt.Printf("signed %s v%s with %d artifact(s)\n", manifestName, m.Version, len(m.Artifacts))
+	slog.Info("release files written", "manifest", filepath.Join(*out, manifestName), "signature", filepath.Join(*out, sigName), "version", m.Version, "artifacts", len(m.Artifacts))
 	return nil
 }
 
@@ -97,6 +103,7 @@ func runVerify(args []string) error {
 	if *manifestPath == "" || *sigPath == "" || *pubPath == "" {
 		return fmt.Errorf("-manifest, -sig and -pubkey are required")
 	}
+	slog.Info("starting release verification", "manifest", *manifestPath, "signature", *sigPath, "public_key", *pubPath)
 
 	data, err := os.ReadFile(*manifestPath)
 	if err != nil {
@@ -119,11 +126,12 @@ func runVerify(args []string) error {
 	if err := signing.Verify(pub, data, string(sig)); err != nil {
 		return err
 	}
+	slog.Info("manifest signature verified", "manifest_bytes", len(data))
 	m, err := manifest.Parse(data)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("OK: %s v%s, %d artifact(s)\n", *manifestPath, m.Version, len(m.Artifacts))
+	slog.Info("release manifest verified", "manifest", *manifestPath, "version", m.Version, "artifacts", len(m.Artifacts))
 	return nil
 }
