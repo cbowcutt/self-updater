@@ -1,9 +1,9 @@
 package binaryProvider
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,13 +12,22 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/cbowcutt/self-updater/internal/manifest"
 	"github.com/cbowcutt/self-updater/internal/manifest/models"
+	"github.com/cbowcutt/self-updater/internal/signing"
+	"github.com/cbowcutt/self-updater/keys"
 	"golang.org/x/mod/semver"
+)
+
+const (
+	manifestURL          = "https://github.com/cbowcutt/self-updater/releases/latest/download/manifest.json"
+	manifestSignatureURL = manifestURL + ".sig"
 )
 
 // GithubBinaryProvider fetches release metadata and retrieves verified binaries.
 type GithubBinaryProvider struct {
-	client *http.Client
+	client    *http.Client
+	publicKey ed25519.PublicKey
 }
 
 // NewGithubBinaryProvider creates a GitHub binary provider with a hardened HTTP client.
@@ -30,7 +39,6 @@ func NewGithubBinaryProvider() *GithubBinaryProvider {
 
 // GetManifest fetches and decodes the latest published manifest.
 func (g *GithubBinaryProvider) GetManifest() (*models.Manifest, error) {
-	const manifestURL = "https://github.com/cbowcutt/self-updater/releases/latest/download/manifest.json"
 	slog.Info("fetching latest release manifest")
 	requestStarted := time.Now()
 	request, err := http.NewRequest(http.MethodGet, manifestURL, nil)
@@ -52,13 +60,41 @@ func (g *GithubBinaryProvider) GetManifest() (*models.Manifest, error) {
 		return nil, fmt.Errorf("unexpected status code while fetching manifest: %s", resp.Status)
 	}
 
-	var manifest models.Manifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
-		slog.Error("failed to decode release manifest", "error", err)
+	manifestBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read manifest: %w", err)
+	}
+
+	signatureResp, err := g.client.Get(manifestSignatureURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch manifest signature: %w", err)
+	}
+	defer signatureResp.Body.Close()
+	if signatureResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code while fetching manifest signature: %s", signatureResp.Status)
+	}
+	signature, err := io.ReadAll(signatureResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read manifest signature: %w", err)
+	}
+
+	publicKey := g.publicKey
+	if len(publicKey) == 0 {
+		publicKey, err = signing.ParsePublicKey(string(keys.PublicKey()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to load embedded manifest public key: %w", err)
+		}
+	}
+	if err := signing.Verify(publicKey, manifestBytes, string(signature)); err != nil {
+		return nil, fmt.Errorf("manifest signature verification failed: %w", err)
+	}
+
+	parsedManifest, err := manifest.Parse(manifestBytes)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode manifest: %w", err)
 	}
-	slog.Info("release manifest fetched", "version", manifest.Version, "artifacts", len(manifest.Artifacts), "duration", time.Since(requestStarted))
-	return &manifest, nil
+	slog.Info("release manifest fetched and signature verified", "version", parsedManifest.Version, "artifacts", len(parsedManifest.Artifacts), "duration", time.Since(requestStarted))
+	return parsedManifest, nil
 }
 
 // IsNewerVersionAvailable reports whether a newer remote release is available.

@@ -1,6 +1,8 @@
 package binaryProvider
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/cbowcutt/self-updater/internal/manifest/models"
+	"github.com/cbowcutt/self-updater/internal/signing"
 )
 
 const latestManifestURL = "https://github.com/cbowcutt/self-updater/releases/latest/download/manifest.json"
@@ -25,6 +28,15 @@ func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 func checksum(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func signTestPayload(t *testing.T, data []byte) (ed25519.PublicKey, string) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return publicKey, signing.Sign(privateKey, data)
 }
 
 func TestIsNewer(t *testing.T) {
@@ -77,16 +89,27 @@ func TestGetBinary(t *testing.T) {
 }
 
 func TestGetManifest(t *testing.T) {
+	const body = `{"version":"1.2.3","artifacts":{"linux-amd64":{"url":"https://example.com/bin","sha256":"abc"}}}`
+	publicKey, signature := signTestPayload(t, []byte(body))
 	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() != latestManifestURL {
+		switch req.URL.String() {
+		case latestManifestURL:
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		case manifestSignatureURL:
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(signature)),
+			}, nil
+		default:
 			t.Fatalf("unexpected URL: %s", req.URL.String())
+			return nil, nil
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"version":"1.2.3","artifacts":{"linux-amd64":{"url":"https://example.com/bin","sha256":"abc"}}}`)),
-		}, nil
-	})}}
+	})}, publicKey: publicKey}
 
 	manifest, err := provider.GetManifest()
 	if err != nil {
@@ -112,15 +135,35 @@ func TestGetManifestRejectsBadStatus(t *testing.T) {
 }
 
 func TestGetManifestRejectsBadJSON(t *testing.T) {
-	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("not-json")),
-		}, nil
-	})}}
+	const body = "not-json"
+	publicKey, signature := signTestPayload(t, []byte(body))
+	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		responseBody := body
+		if req.URL.String() == manifestSignatureURL {
+			responseBody = signature
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(responseBody))}, nil
+	})}, publicKey: publicKey}
 	if _, err := provider.GetManifest(); err == nil || !strings.Contains(err.Error(), "failed to decode manifest") {
 		t.Fatalf("expected decode error, got %v", err)
+	}
+}
+
+func TestGetManifestRejectsInvalidSignature(t *testing.T) {
+	const body = `{"version":"1.2.3","artifacts":{"linux-amd64":{"url":"https://example.com/bin","sha256":"abc"}}}`
+	publicKey, _ := signTestPayload(t, []byte(body))
+	provider := &GithubBinaryProvider{
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			responseBody := body
+			if req.URL.String() == manifestSignatureURL {
+				responseBody = "invalid-signature"
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(responseBody))}, nil
+		})},
+		publicKey: publicKey,
+	}
+	if _, err := provider.GetManifest(); err == nil || !strings.Contains(err.Error(), "manifest signature verification failed") {
+		t.Fatalf("expected signature error, got %v", err)
 	}
 }
 
@@ -170,12 +213,16 @@ func TestCheckAndDownloadLatestVersion(t *testing.T) {
 
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	manifestData := `{"version":"2.0.0","artifacts":{"` + platform + `":{"url":"` + server.URL + `","sha256":"` + checksum([]byte(body)) + `"}}}`
+	publicKey, signature := signTestPayload(t, []byte(manifestData))
 	provider := &GithubBinaryProvider{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() == latestManifestURL {
 			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(manifestData))}, nil
 		}
+		if req.URL.String() == manifestSignatureURL {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(signature))}, nil
+		}
 		return server.Client().Transport.RoundTrip(req)
-	})}}
+	})}, publicKey: publicKey}
 	shouldUpdate, binary, err := provider.CheckAndDownloadLatestVersion("1.0.0")
 	if err != nil {
 		t.Fatalf("CheckAndDownloadLatestVersion returned error: %v", err)
