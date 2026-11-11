@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -19,15 +19,35 @@ var version = "dev" // overridden at build time; "dev" means a local build
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	slog.Info("self-updater starting", "version", version, "platform", runtime.GOOS+"-"+runtime.GOARCH)
+	executablePath, err := os.Executable()
+	if err != nil {
+		slog.Error("failed to locate current executable", "error", err)
+		return
+	}
+	executablePath, err = filepath.Abs(executablePath)
+	if err != nil {
+		slog.Error("failed to resolve current executable path", "error", err)
+		return
+	}
+	executablePath, err = filepath.EvalSymlinks(executablePath)
+	if err != nil {
+		slog.Error("failed to resolve current executable symlinks", "path", executablePath, "error", err)
+		return
+	}
+
+	shutdownContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	binaryClient := binaryProvider.NewGithubBinaryProvider()
 
-	doneChan := make(chan bool, 1)
 	restartChan := make(chan struct{}, 1)
-	go func(done chan bool) {
+	go func() {
 		ticker := time.NewTicker(time.Duration(1 * time.Second))
+		defer ticker.Stop()
 
 		for {
 			select {
+			case <-shutdownContext.Done():
+				return
 			case <-ticker.C:
 				shouldUpdate, binaryBytes, err := binaryClient.CheckAndDownloadLatestVersion(version)
 				if err != nil {
@@ -38,56 +58,40 @@ func main() {
 					slog.Info("application is up to date")
 					continue
 				}
+				if shutdownContext.Err() != nil {
+					return
+				}
 				slog.Info("applying downloaded update")
 				if err := selfUpdater.Update(binaryBytes); err != nil {
 					slog.Error("update installation failed", "error", err)
 					continue
 				}
 				slog.Info("update installation completed")
-				restartChan <- struct{}{}
-				return
-			case <-done:
-				ticker.Stop()
+				select {
+				case restartChan <- struct{}{}:
+				case <-shutdownContext.Done():
+				}
 				return
 			}
 		}
-	}(doneChan)
-	shutdownContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
+	}()
+
+	statusTicker := time.NewTicker(time.Second)
+	defer statusTicker.Stop()
 	for {
 		select {
 		case <-shutdownContext.Done():
-			doneChan <- true
 			return
 		case <-restartChan:
-			if err := restart(); err != nil {
+			if shutdownContext.Err() != nil {
+				return
+			}
+			if err := restart(executablePath); err != nil {
 				slog.Error("failed to restart application", "error", err)
 			}
 			return
-		default:
-			time.Sleep(time.Duration(1 * time.Second))
+		case <-statusTicker.C:
 			slog.Info("application running")
 		}
 	}
-}
-
-func restart() error {
-	executable, err := os.Executable()
-	if err != nil {
-		return err
-	}
-
-	command := exec.Command(executable, os.Args[1:]...)
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	command.Env = os.Environ()
-
-	if err := command.Start(); err != nil {
-		return err
-	}
-	if err := command.Process.Release(); err != nil {
-		slog.Warn("failed to release restarted process handle", "error", err)
-	}
-	return nil
 }
