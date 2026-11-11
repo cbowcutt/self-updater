@@ -40,41 +40,45 @@ func main() {
 	binaryClient := binaryProvider.NewGithubBinaryProvider()
 
 	restartChan := make(chan struct{}, 1)
-	go func() {
-		ticker := time.NewTicker(time.Duration(5 * time.Second))
-		defer ticker.Stop()
+	if version != "dev" {
+		go func() {
+			ticker := time.NewTicker(time.Duration(5 * time.Second))
+			defer ticker.Stop()
 
-		for {
-			select {
-			case <-shutdownContext.Done():
-				return
-			case <-ticker.C:
-				shouldUpdate, binaryBytes, err := binaryClient.CheckAndDownloadLatestVersion(version)
-				if err != nil {
-					slog.Error("update check failed", "error", err)
-					continue
-				}
-				if !shouldUpdate {
-					slog.Info("application is up to date")
-					continue
-				}
-				if shutdownContext.Err() != nil {
+			for {
+				select {
+				case <-shutdownContext.Done():
+					return
+				case <-ticker.C:
+					shouldUpdate, binaryBytes, err := binaryClient.CheckAndDownloadLatestVersion(version)
+					if err != nil {
+						slog.Error("update check failed", "error", err)
+						continue
+					}
+					if !shouldUpdate {
+						slog.Info("application is up to date")
+						continue
+					}
+					if shutdownContext.Err() != nil {
+						return
+					}
+					slog.Info("applying downloaded update")
+					if err := selfUpdater.Update(binaryBytes); err != nil {
+						slog.Error("update installation failed", "error", err)
+						continue
+					}
+					slog.Info("update installation completed")
+					select {
+					case restartChan <- struct{}{}:
+					case <-shutdownContext.Done():
+					}
 					return
 				}
-				slog.Info("applying downloaded update")
-				if err := selfUpdater.Update(binaryBytes); err != nil {
-					slog.Error("update installation failed", "error", err)
-					continue
-				}
-				slog.Info("update installation completed")
-				select {
-				case restartChan <- struct{}{}:
-				case <-shutdownContext.Done():
-				}
-				return
 			}
-		}
-	}()
+		}()
+	} else {
+		slog.Info("development version detected, skipping update checks")
+	}
 
 	statusTicker := time.NewTicker(time.Second)
 	defer statusTicker.Stop()
