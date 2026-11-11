@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -30,24 +31,51 @@ func Update(binaryBytes *[]byte) error {
 		cmdPath = cmdPath + ".exe"
 	}
 
-	stat, err := os.Lstat(cmdPath)
+	cmdPath, err = filepath.Abs(cmdPath)
+	if err != nil {
+		slog.Error("failed to resolve current executable path", "path", cmdPath, "error", err)
+		return fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+	cmdPath, err = filepath.EvalSymlinks(cmdPath)
+	if err != nil {
+		slog.Error("failed to resolve executable symlinks", "path", cmdPath, "error", err)
+		return fmt.Errorf("failed to resolve executable symlinks: %w", err)
+	}
+
+	stat, err := os.Stat(cmdPath)
 	if err != nil {
 		slog.Error("failed to inspect current executable", "path", cmdPath, "error", err)
 		return fmt.Errorf("failed to stat executable: %w", err)
 	}
-	if stat.Mode()&os.ModeSymlink != 0 {
-		slog.Debug("current executable is a symlink", "path", cmdPath)
-		cmdPath, err = os.Readlink(cmdPath)
-		if err != nil {
-			slog.Error("failed to resolve executable symlink", "error", err)
-			return fmt.Errorf("failed to resolve executable symlink: %w", err)
-		}
-		slog.Debug("resolved executable symlink", "target", cmdPath)
-	}
 
-	if err := os.WriteFile(cmdPath, *binaryBytes, stat.Mode()); err != nil {
-		slog.Error("failed to replace executable with update", "path", cmdPath, "error", err)
-		return fmt.Errorf("failed to write executable: %w", err)
+	tempFile, err := os.CreateTemp(filepath.Dir(cmdPath), "."+filepath.Base(cmdPath)+".update-*")
+	if err != nil {
+		slog.Error("failed to create temporary update file", "path", cmdPath, "error", err)
+		return fmt.Errorf("failed to create temporary update file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+	defer tempFile.Close()
+
+	if _, err := tempFile.Write(*binaryBytes); err != nil {
+		slog.Error("failed to write temporary update file", "path", tempPath, "error", err)
+		return fmt.Errorf("failed to write temporary update file: %w", err)
+	}
+	if err := tempFile.Chmod(stat.Mode().Perm()); err != nil {
+		slog.Error("failed to set update file permissions", "path", tempPath, "error", err)
+		return fmt.Errorf("failed to set update file permissions: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		slog.Error("failed to sync temporary update file", "path", tempPath, "error", err)
+		return fmt.Errorf("failed to sync temporary update file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		slog.Error("failed to close temporary update file", "path", tempPath, "error", err)
+		return fmt.Errorf("failed to close temporary update file: %w", err)
+	}
+	if err := os.Rename(tempPath, cmdPath); err != nil {
+		slog.Error("failed to atomically replace executable", "path", cmdPath, "error", err)
+		return fmt.Errorf("failed to replace executable: %w", err)
 	}
 
 	slog.Info("self-update binary written successfully", "path", cmdPath, "bytes", len(*binaryBytes))

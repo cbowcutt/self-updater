@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"syscall"
@@ -21,7 +22,8 @@ func main() {
 	slog.Info("self-updater starting", "version", version, "platform", runtime.GOOS+"-"+runtime.GOARCH)
 	binaryClient := binaryProvider.NewGithubBinaryProvider()
 
-	doneChan := make(chan bool)
+	doneChan := make(chan bool, 1)
+	restartChan := make(chan struct{}, 1)
 	go func(done chan bool) {
 		ticker := time.NewTicker(time.Duration(1 * time.Second))
 
@@ -43,6 +45,8 @@ func main() {
 					continue
 				}
 				slog.Info("update installation completed")
+				restartChan <- struct{}{}
+				return
 			case <-done:
 				ticker.Stop()
 				return
@@ -56,9 +60,35 @@ func main() {
 		case <-shutdownContext.Done():
 			doneChan <- true
 			return
+		case <-restartChan:
+			if err := restart(); err != nil {
+				slog.Error("failed to restart application", "error", err)
+			}
+			return
 		default:
 			time.Sleep(time.Duration(1 * time.Second))
 			slog.Info("application running")
 		}
 	}
+}
+
+func restart() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+
+	command := exec.Command(executable, os.Args[1:]...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Env = os.Environ()
+
+	if err := command.Start(); err != nil {
+		return err
+	}
+	if err := command.Process.Release(); err != nil {
+		slog.Warn("failed to release restarted process handle", "error", err)
+	}
+	return nil
 }
