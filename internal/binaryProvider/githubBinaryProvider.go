@@ -132,9 +132,14 @@ func verifyChecksum(data []byte, expectedSHA256 string) error {
 }
 
 func isNewer(remote, current string) (bool, error) {
-	r, c := "v"+remote, "v"+current
-	if !semver.IsValid(r) || !semver.IsValid(c) {
+
+	r := "v" + remote
+	c := "v" + current
+	if !semver.IsValid(r) || (!semver.IsValid(c) && c != "vdev") {
 		return false, fmt.Errorf("invalid version: remote=%q current=%q", remote, current)
+	}
+	if c == "vdev" {
+		return true, nil
 	}
 	return semver.Compare(r, c) > 0, nil
 }
