@@ -23,7 +23,7 @@ func main() {
 
 	doneChan := make(chan bool)
 	go func(done chan bool) {
-		ticker := time.NewTicker(time.Duration(1 * time.Minute))
+		ticker := time.NewTicker(time.Duration(1 * time.Second))
 
 		for {
 			select {
