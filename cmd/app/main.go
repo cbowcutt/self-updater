@@ -41,7 +41,7 @@ func main() {
 
 	restartChan := make(chan struct{}, 1)
 	go func() {
-		ticker := time.NewTicker(time.Duration(1 * time.Second))
+		ticker := time.NewTicker(time.Duration(5 * time.Second))
 		defer ticker.Stop()
 
 		for {

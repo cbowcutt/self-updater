@@ -38,6 +38,7 @@ func (g *GithubBinaryProvider) GetManifest() (*models.Manifest, error) {
 		return nil, fmt.Errorf("failed to create manifest request: %w", err)
 	}
 	request.Header.Set("Cache-Control", "no-cache")
+	request.Header.Set("Pragma", "no-cache")
 
 	resp, err := g.client.Do(request)
 	if err != nil {
