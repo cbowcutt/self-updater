@@ -14,8 +14,7 @@ import (
 	"github.com/cbowcutt/self-updater/internal/selfUpdater"
 )
 
-// overridden at build time; "dev" means a local build
-var version = "dev"
+var version = "dev" // overridden at build time; "dev" means a local build
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
