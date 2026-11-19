@@ -98,7 +98,7 @@ func main() {
 			}
 			return
 		case <-statusTicker.C:
-			slog.Info("application running")
+			slog.Info("application running.", "version", version)
 		}
 	}
 }
